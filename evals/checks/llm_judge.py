@@ -1,3 +1,25 @@
+"""LLM-as-judge: a separate model scores the plan on three subjective axes.
+
+This is the most expensive and least deterministic dimension in the suite. We
+run it last and keep its rubric narrow so the scores are aggregable across
+runs. The judge returns Pydantic-typed structured output (1-5 integers plus
+short rationales) rather than free text, which keeps trends visible over time.
+
+Why have a judge at all when the deterministic checks above are cheaper?
+Because realism, completeness, and specificity are not invariants — they are
+quality signals. A plan can pass every business rule and still be terrible. A
+judge approximates "would a delivery lead trust this?" without needing humans
+in the loop on every iteration.
+
+Known limitations (acknowledge them, don't pretend they aren't there):
+  - Self-bias: the judge model may favor outputs from the same family.
+    Mitigation: rotate judge models, or use a stronger model for judging.
+  - Verbosity bias: longer outputs tend to score higher.
+    Mitigation: keep the rubric explicit about specificity, not length.
+  - Variance: judge scores fluctuate on identical inputs.
+    Mitigation: run the suite N times and report mean + stddev for trend work.
+"""
+
 import json
 import os
 from typing import Literal
@@ -28,6 +50,16 @@ class JudgeVerdict(BaseModel):
 
 
 def judge(brief: str, plan: ProjectPlan, *, run_id: str, model: str | None = None) -> JudgeVerdict:
+    """Score a plan on realism, completeness, and specificity (1-5 each).
+
+    What it tests: subjective quality dimensions the deterministic checks
+    cannot reach.
+    How: a separate `gpt-4o-mini` (or `OPENAI_JUDGE_MODEL`) call sees the
+    brief and the JSON plan, then returns a `JudgeVerdict` with three integer
+    scores and a one-sentence rationale per dimension.
+    Why: the rest of the suite catches what is broken; this catches what is
+    merely bad.
+    """
     model = model or JUDGE_MODEL
     client = OpenAI()
 
