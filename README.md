@@ -5,7 +5,7 @@ Turns a free-text agency project brief into a structured project plan (tasks, ro
 ## What it shows
 
 - **OpenAI structured outputs.** Pydantic-typed `ProjectPlan` schema; the model can't return invalid JSON, can't invent unknown roles or phases.
-- **Local Langfuse-shaped tracing.** Every LLM call (generation + judge) writes a JSONL span with model, latency, token usage, input, output. Swapping in real Langfuse is a one-function change.
+- **Langfuse observability.** Every LLM call (generation + judge) is traced with model, latency, and token usage. Set `LANGFUSE_SECRET_KEY` to stream traces live; omit it for local JSONL only.
 - **Four-layer evaluation suite.** Cheap deterministic checks first, expensive LLM-as-judge last. Each layer fails fast with a specific message.
 
 ## Quick start
@@ -13,10 +13,14 @@ Turns a free-text agency project brief into a structured project plan (tasks, ro
 ```bash
 cp .env.example .env
 # edit .env: set OPENAI_API_KEY (and optionally OPENAI_MODEL, default gpt-4o-mini)
+# optionally set LANGFUSE_SECRET_KEY + LANGFUSE_PUBLIC_KEY to enable live tracing
 
 python -m venv .venv
 . .venv/Scripts/activate    # on Windows; on Unix: source .venv/bin/activate
 pip install -e ".[dev]"
+
+# optional: enable Langfuse tracing
+pip install -e ".[langfuse]"
 
 # Generate a plan from a brief
 python -m brief_breakdown "B2B SaaS company needs a brand refresh: new logo, type system, marketing site on Webflow. 10 weeks, $40k."
@@ -61,7 +65,7 @@ brief ──► generate_plan() ──► ProjectPlan (Pydantic)
                           aggregate ──► console + markdown + json report
 ```
 
-Every LLM call (the generation itself, plus the judge) is logged as a JSONL span under `traces/<run_id>.jsonl` so you can replay and inspect exactly what happened.
+Every LLM call (the generation itself, plus the judge) is logged as a JSONL span under `traces/<case_run_id>.jsonl` so you can replay and inspect exactly what happened. If Langfuse is configured, the same data streams there in real time — each eval case appears as its own trace, grouped by session.
 
 ### The four dimensions in detail
 
@@ -139,6 +143,49 @@ So the policy is: **whenever a failure mode can be expressed as a deterministic 
 
 ---
 
+## Langfuse observability
+
+When `LANGFUSE_SECRET_KEY` is set in your environment, every LLM call automatically streams to Langfuse. No code changes needed — the integration is opt-in via environment variables.
+
+### Setup
+
+```bash
+pip install -e ".[langfuse]"
+```
+
+Add to `.env`:
+
+```
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com   # omit for cloud default
+```
+
+### What gets traced
+
+**CLI run** (`python -m brief_breakdown "..."`):
+- One trace per generation containing a `generate_plan` generation with model, token usage, latency, input brief, and output plan.
+
+**Eval run** (`python -m evals.runners.run_evals`):
+- One Langfuse **session** per eval run (keyed by `session_id`).
+- One **trace** per golden-dataset case, each containing two generations (`generate_plan` + `llm_judge`).
+- Per-case **scores** attached to each trace after all checks complete:
+
+| score name | range | source |
+|------------|-------|--------|
+| `schema_valid` | 0 or 1 | Pydantic parse |
+| `coverage_recall` | 0.0 – 1.0 | keyword recall against `required_signals` |
+| `business_rules_pass_rate` | 0.0 – 1.0 | fraction of 7 rules passed |
+| `judge_realism` | 1 – 5 | LLM-as-judge |
+| `judge_completeness` | 1 – 5 | LLM-as-judge |
+| `judge_specificity` | 1 – 5 | LLM-as-judge |
+
+### Without Langfuse
+
+Everything behaves identically. Spans are written to `traces/<case_run_id>.jsonl` (one file per eval case). The Langfuse code paths are no-ops when `LANGFUSE_SECRET_KEY` is absent, even if the `langfuse` package is not installed.
+
+---
+
 ## Unit tests
 
 Three pytest modules cover the pure-Python parts of the system. None hit the OpenAI API, so they run in ~1s and are safe to wire into pre-commit / CI:
@@ -162,7 +209,7 @@ src/brief_breakdown/      # the AI feature itself
   schema.py               # Pydantic models — single source of truth for the output contract
   prompts.py              # system + judge prompts
   generator.py            # generate_plan() — structured-output OpenAI call
-  tracing.py              # local JSONL spans (Langfuse-shaped)
+  tracing.py              # JSONL spans + optional Langfuse streaming
   cli.py                  # python -m brief_breakdown "..."
 evals/
   dataset/golden.jsonl    # 15 hand-curated (brief, required_signals) pairs
@@ -175,7 +222,7 @@ tests/                    # pytest unit tests, no LLM calls
 
 If this were a real production feature, the obvious next moves:
 
-- **Tracing.** Replace local JSONL with Langfuse (`langfuse.trace()` swap). The current trace shape is intentionally Langfuse-compatible.
+- **Tracing.** ~~Replace local JSONL with Langfuse~~ Done — set `LANGFUSE_SECRET_KEY` to enable.
 - **Dataset versioning.** Store golden examples in a versioned table or git-tracked yaml. Tag each eval run with the dataset version + model version + git SHA so you can plot score trends over time and pinpoint when a regression entered.
 - **CI gating.** Run `--no-judge` evals on every PR (cheap and deterministic), full suite nightly. Fail PR if any deterministic dimension regresses; alert if judge averages drop > 0.3 versus the rolling baseline.
 - **Stratified slices.** Report aggregate scores per industry / project size / budget tier. A 5% overall drop might be a 30% drop on data-warehouse briefs and zero elsewhere — that's the regression you actually care about.

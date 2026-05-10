@@ -18,6 +18,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+langfuse = [
+    "langfuse>=2.0,<3",
+]
 
 [project.scripts]
 brief-breakdown = "brief_breakdown.cli:main"

@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 
 from brief_breakdown.generator import generate_plan
-from brief_breakdown.tracing import new_run_id
+from brief_breakdown.tracing import get_langfuse_client, new_run_id
 from evals.checks.business_rules import run_business_rules
 from evals.checks.coverage_check import coverage
 from evals.checks.llm_judge import judge
@@ -26,11 +26,11 @@ def load_dataset() -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def evaluate_one(case: dict, *, skip_judge: bool, run_id: str) -> dict:
+def evaluate_one(case: dict, *, skip_judge: bool, run_id: str, session_id: str) -> dict:
     brief = case["brief"]
     required = case.get("required_signals", [])
 
-    plan = generate_plan(brief, run_id=run_id)
+    plan = generate_plan(brief, run_id=run_id, session_id=session_id)
     raw = plan.model_dump()
 
     schema_ok, schema_msg = check_schema(raw)
@@ -41,12 +41,13 @@ def evaluate_one(case: dict, *, skip_judge: bool, run_id: str) -> dict:
     verdict = None
     if not skip_judge:
         try:
-            verdict = judge(brief, plan, run_id=run_id).model_dump()
+            verdict = judge(brief, plan, run_id=run_id, session_id=session_id).model_dump()
         except Exception as e:
             verdict = {"error": str(e)}
 
     return {
         "id": case["id"],
+        "trace_id": run_id,
         "schema": {"ok": schema_ok, "msg": schema_msg},
         "coverage": {"recall": recall, "missing": missing},
         "business_rules": {
@@ -83,6 +84,28 @@ def aggregate(results: list[dict]) -> dict:
     }
 
 
+def _submit_langfuse_scores(results: list[dict]) -> None:
+    lf = get_langfuse_client()
+    if lf is None:
+        return
+    for r in results:
+        tid = r["trace_id"]
+        lf.score(trace_id=tid, name="schema_valid",
+                 value=1.0 if r["schema"]["ok"] else 0.0,
+                 comment=r["schema"]["msg"])
+        lf.score(trace_id=tid, name="coverage_recall",
+                 value=r["coverage"]["recall"],
+                 comment=f"missing: {r['coverage']['missing']}" if r["coverage"]["missing"] else "all signals found")
+        rules = r["business_rules"]
+        lf.score(trace_id=tid, name="business_rules_pass_rate",
+                 value=rules["passed"] / rules["total"] if rules["total"] else 1.0)
+        if r["judge"] and "scores" in r["judge"]:
+            sc = r["judge"]["scores"]
+            for dim in ("realism", "completeness", "specificity"):
+                lf.score(trace_id=tid, name=f"judge_{dim}", value=sc[dim],
+                         comment=r["judge"].get(f"{dim}_rationale", ""))
+
+
 def render_console(agg: dict, results: list[dict]) -> None:
     console.rule("Evals summary")
     console.print(f"examples:        {agg['n']}")
@@ -117,12 +140,12 @@ def render_console(agg: dict, results: list[dict]) -> None:
                     console.print(f"  rule [{d['name']}]: {d['msg']}")
 
 
-def render_markdown(agg: dict, results: list[dict], *, model: str, run_id: str) -> str:
+def render_markdown(agg: dict, results: list[dict], *, model: str, session_id: str) -> str:
     lines: list[str] = []
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines.append(f"# Eval report — {ts}")
     lines.append("")
-    lines.append(f"- run id: `{run_id}`")
+    lines.append(f"- session id: `{session_id}`")
     lines.append(f"- model: `{model}`")
     lines.append(f"- examples: {agg['n']}")
     lines.append("")
@@ -188,25 +211,28 @@ def main() -> int:
     if args.limit:
         cases = cases[: args.limit]
 
-    run_id = new_run_id()
-    console.print(f"Running {len(cases)} examples (run_id={run_id})")
+    session_id = new_run_id()
+    console.print(f"Running {len(cases)} examples (session_id={session_id})")
 
     results = []
     for i, c in enumerate(cases, 1):
+        case_run_id = f"{session_id}--{c['id']}"
         console.print(f"  [{i}/{len(cases)}] {c['id']}")
-        results.append(evaluate_one(c, skip_judge=args.no_judge, run_id=run_id))
+        results.append(evaluate_one(c, skip_judge=args.no_judge,
+                                    run_id=case_run_id, session_id=session_id))
 
     agg = aggregate(results)
+    _submit_langfuse_scores(results)
     render_console(agg, results)
 
     REPORTS.mkdir(parents=True, exist_ok=True)
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    md = render_markdown(agg, results, model=model, run_id=run_id)
+    md = render_markdown(agg, results, model=model, session_id=session_id)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     (REPORTS / f"{timestamp}.md").write_text(md, encoding="utf-8")
     (REPORTS / "latest.md").write_text(md, encoding="utf-8")
     (REPORTS / f"{timestamp}.json").write_text(
-        json.dumps({"run_id": run_id, "model": model, "aggregate": agg, "results": results}, indent=2),
+        json.dumps({"session_id": session_id, "model": model, "aggregate": agg, "results": results}, indent=2),
         encoding="utf-8",
     )
 

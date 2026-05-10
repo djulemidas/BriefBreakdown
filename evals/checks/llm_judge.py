@@ -49,7 +49,7 @@ class JudgeVerdict(BaseModel):
     specificity_rationale: str
 
 
-def judge(brief: str, plan: ProjectPlan, *, run_id: str, model: str | None = None) -> JudgeVerdict:
+def judge(brief: str, plan: ProjectPlan, *, run_id: str, model: str | None = None, session_id: str | None = None) -> JudgeVerdict:
     """Score a plan on realism, completeness, and specificity (1-5 each).
 
     What it tests: subjective quality dimensions the deterministic checks
@@ -99,6 +99,8 @@ def judge(brief: str, plan: ProjectPlan, *, run_id: str, model: str | None = Non
             if completion.usage
             else {}
         ),
+        session_id=session_id,
+        trace_name="llm_judge",
     )
 
     return verdict

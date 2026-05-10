@@ -16,6 +16,7 @@ def generate_plan(
     *,
     model: str | None = None,
     run_id: str | None = None,
+    session_id: str | None = None,
 ) -> ProjectPlan:
     """Turn an agency brief into a structured ProjectPlan via OpenAI structured outputs."""
     model = model or DEFAULT_MODEL
@@ -56,6 +57,8 @@ def generate_plan(
         output_payload=plan.model_dump(),
         latency_ms=t.elapsed_ms,
         usage=usage,
+        session_id=session_id,
+        trace_name="generate_plan",
     )
 
     return plan

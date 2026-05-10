@@ -93,7 +93,7 @@ def test_render_markdown_includes_run_metadata_and_per_example_rows():
         _result(id="case_x", judge_scores={"realism": 4, "completeness": 5, "specificity": 3}),
     ]
     agg = aggregate(results)
-    md = render_markdown(agg, results, model="gpt-4o-mini", run_id="run-xyz")
+    md = render_markdown(agg, results, model="gpt-4o-mini", session_id="run-xyz")
     assert "run-xyz" in md
     assert "gpt-4o-mini" in md
     assert "case_x" in md
@@ -107,7 +107,7 @@ def test_render_markdown_lists_failures():
         {"name": "hours_consistent", "ok": False, "msg": "drift 30%"},
     ]
     failing["coverage"]["missing"] = ["training", "qa"]
-    md = render_markdown(aggregate([failing]), [failing], model="gpt-4o-mini", run_id="r1")
+    md = render_markdown(aggregate([failing]), [failing], model="gpt-4o-mini", session_id="r1")
     assert "case_fail" in md
     assert "drift 30%" in md
     assert "training" in md
@@ -115,5 +115,5 @@ def test_render_markdown_lists_failures():
 
 def test_render_markdown_says_none_when_no_failures():
     passing = _result(id="case_ok")
-    md = render_markdown(aggregate([passing]), [passing], model="gpt-4o-mini", run_id="r1")
+    md = render_markdown(aggregate([passing]), [passing], model="gpt-4o-mini", session_id="r1")
     assert "_None._" in md
